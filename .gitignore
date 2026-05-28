@@ -1,0 +1,4 @@
+host-agent/agent
+host-agent/**/*.test
+*.log
+.DS_Store
