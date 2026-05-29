@@ -15,9 +15,13 @@ import (
 )
 
 func main() {
+	defaultHostID, _ := os.Hostname()
+
 	var (
 		listenAddr   = flag.String("addr", ":8080", "host agent listen address")
 		schedulerURL = flag.String("scheduler", "", "scheduler base URL for heartbeats (e.g. http://scheduler:9090)")
+		hostID       = flag.String("host-id", defaultHostID, "stable identifier for this host (defaults to hostname)")
+		advertiseURL = flag.String("advertise-url", "", "URL the scheduler should use to reach this agent (e.g. http://10.0.1.42:8080)")
 		kernelPath   = flag.String("kernel", "/opt/firecracker/vmlinux", "path to guest kernel image")
 		baseImageDir = flag.String("base-images", "/opt/firecracker/images", "directory of base rootfs images")
 		snapshotDir  = flag.String("snapshots", "/var/lib/agent/snapshots", "snapshot storage directory")
@@ -28,6 +32,11 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	if *schedulerURL != "" && *advertiseURL == "" {
+		log.Error("--advertise-url is required when --scheduler is set")
+		os.Exit(2)
+	}
+
 	mgr := vm.NewManager(vm.Config{
 		KernelPath:   *kernelPath,
 		BaseImageDir: *baseImageDir,
@@ -36,14 +45,14 @@ func main() {
 		LogDir:       *logDir,
 	})
 
-	srv := api.NewServer(mgr, log)
+	srv := api.NewServer(mgr, log, *hostID, *advertiseURL)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Send heartbeats to the scheduler every 10 seconds if a URL was provided.
 	if *schedulerURL != "" {
-		go api.Heartbeat(ctx, mgr, *schedulerURL, 10*time.Second, log)
+		go srv.Heartbeat(ctx, *schedulerURL, 10*time.Second)
 	}
 
 	httpServer := &http.Server{
