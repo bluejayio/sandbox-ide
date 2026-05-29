@@ -1,4 +1,15 @@
+# Build outputs
+bin/
 host-agent/agent
 host-agent/**/*.test
+scheduler/scheduler
+scheduler/**/*.test
+
+# Runtime data (PIDs, logs from scripts/up.sh)
+run/
+
+# Logs
 *.log
+
+# OS
 .DS_Store
