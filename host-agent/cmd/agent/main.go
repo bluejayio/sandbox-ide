@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sandbox-ide/host-agent/internal/agent"
+	"github.com/sandbox-ide/host-agent/internal/api"
 	"github.com/sandbox-ide/host-agent/internal/vm"
 )
 
@@ -36,14 +36,14 @@ func main() {
 		LogDir:       *logDir,
 	})
 
-	srv := agent.NewServer(mgr, log)
+	srv := api.NewServer(mgr, log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Send heartbeats to the scheduler every 10 seconds if a URL was provided.
 	if *schedulerURL != "" {
-		go agent.Heartbeat(ctx, mgr, *schedulerURL, 10*time.Second, log)
+		go api.Heartbeat(ctx, mgr, *schedulerURL, 10*time.Second, log)
 	}
 
 	httpServer := &http.Server{

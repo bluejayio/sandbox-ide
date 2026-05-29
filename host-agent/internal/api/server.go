@@ -1,4 +1,4 @@
-package agent
+package api
 
 import (
 	"context"
@@ -21,16 +21,16 @@ import (
 //	POST   /vms/restore              restore a VM from snapshot
 //	GET    /heartbeat                host capacity + VM inventory
 type Server struct {
-	mgr    *vm.Manager
-	log    *slog.Logger
-	mux    *http.ServeMux
+	mgr *vm.Manager
+	log *slog.Logger
+	mux *http.ServeMux
 }
 
 func NewServer(mgr *vm.Manager, log *slog.Logger) *Server {
 	s := &Server{mgr: mgr, log: log, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/vms", s.handleVMs)
+	s.mux.HandleFunc("/vms", s.handleCreateVM)
 	s.mux.HandleFunc("/vms/restore", s.handleRestore)
-	s.mux.HandleFunc("/vms/", s.handleVM)       // /vms/{id} and /vms/{id}/snapshot
+	s.mux.HandleFunc("/vms/", s.handleVM) // /vms/{id} and /vms/{id}/snapshot
 	s.mux.HandleFunc("/heartbeat", s.handleHeartbeat)
 	return s
 }
@@ -58,7 +58,7 @@ type vmResponse struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-func (s *Server) handleVMs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

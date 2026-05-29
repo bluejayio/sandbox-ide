@@ -1,0 +1,9 @@
+{
+    "go.goroot": "/opt/homebrew/Cellar/go/1.26.3/libexec",
+    "go.gopath": "/Users/shuyingzhang/go",
+    "gopls": {
+        "build.env": {
+            "GOOS": "linux"
+        }
+    }
+}
