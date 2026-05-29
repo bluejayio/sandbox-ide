@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -90,13 +91,19 @@ func (c *Client) LoadSnapshot(params SnapshotLoadParams) error {
 }
 
 // Spawn starts a Firecracker process and waits until its API socket is ready.
+// On failure, returns an error that includes firecracker's stderr and exit
+// status so the caller can see why startup failed (bad kernel path, missing
+// /dev/kvm, etc.) without having to dig through per-VM log files.
 func Spawn(vmID, socketPath, logPath string) (int, error) {
 	args := []string{"--api-sock", socketPath, "--id", vmID}
 	if logPath != "" {
 		args = append(args, "--log-path", logPath, "--level", "Info")
 	}
 
+	var stderr bytes.Buffer
 	cmd := exec.Command("/usr/bin/firecracker", args...)
+	cmd.Stderr = &stderr
+
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("spawn firecracker[%s]: %w", vmID, err)
 	}
@@ -109,9 +116,17 @@ func Spawn(vmID, socketPath, logPath string) (int, error) {
 			conn.Close()
 			return cmd.Process.Pid, nil
 		}
+		// If firecracker exited before opening the socket, surface its
+		// stderr so the caller knows why (e.g. KVM permission denied).
+		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+			return 0, fmt.Errorf("firecracker[%s] exited early (%s): %s",
+				vmID, cmd.ProcessState, strings.TrimSpace(stderr.String()))
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// Still running but stuck — kill it before returning.
 	cmd.Process.Kill()
-	return 0, fmt.Errorf("firecracker[%s]: API socket never appeared at %s", vmID, socketPath)
+	return 0, fmt.Errorf("firecracker[%s]: API socket never appeared at %s; stderr=%q",
+		vmID, socketPath, strings.TrimSpace(stderr.String()))
 }

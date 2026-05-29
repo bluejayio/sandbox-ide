@@ -44,14 +44,17 @@ func NewManager(cfg Config) *Manager {
 // Create boots a new microVM for the given workspace and runtime.
 func (m *Manager) Create(ctx context.Context, vmID, runtime, workspaceID string, size SizeClass) (*VM, error) {
 	socketPath := filepath.Join(m.cfg.SocketDir, vmID+".sock")
-	overlayPath := filepath.Join(m.cfg.SocketDir, vmID+"-root.qcow2")
+	overlayPath := filepath.Join(m.cfg.SocketDir, vmID+"-root.ext4")
 	vsockPath := filepath.Join(m.cfg.SocketDir, vmID+"-vsock.sock")
 	logPath := filepath.Join(m.cfg.LogDir, vmID+".log")
 
-	// 1. COW overlay over the shared base image so the base image stays pristine.
+	// 1. Per-VM writable copy of the base image. Firecracker only supports
+	//    raw block devices (no qcow2), so we make an actual copy. On
+	//    reflink-capable filesystems (btrfs, XFS) this is instant and shares
+	//    pages with the base. On ext4 it does a full copy.
 	baseImage := filepath.Join(m.cfg.BaseImageDir, runtime+".ext4")
 	if err := createOverlay(baseImage, overlayPath); err != nil {
-		return nil, fmt.Errorf("create overlay for %s: %w", vmID, err)
+		return nil, fmt.Errorf("create rootfs for %s: %w", vmID, err)
 	}
 
 	// 2. TAP device — unique index keeps subnet addresses non-overlapping.
@@ -263,18 +266,16 @@ func (m *Manager) cleanup(vmID, tapName, overlayPath string, pid int) {
 	os.Remove(filepath.Join(m.cfg.SocketDir, vmID+"-vsock.sock"))
 }
 
-// createOverlay creates a qcow2 copy-on-write image backed by the base ext4.
-// Writes go to the overlay; the base image is never modified.
+// createOverlay produces a per-VM writable rootfs from the shared base image.
+// Firecracker requires raw block devices (no qcow2), so we copy the base.
+//
+// `cp --reflink=auto` attempts a copy-on-write reflink first (instant, no
+// disk usage) and falls back to a full copy on filesystems that don't
+// support reflinks (ext4). The base image is never modified.
 func createOverlay(basePath, overlayPath string) error {
-	out, err := exec.Command(
-		"qemu-img", "create",
-		"-f", "qcow2",
-		"-b", basePath,
-		"-F", "raw",
-		overlayPath, "10G",
-	).CombinedOutput()
+	out, err := exec.Command("cp", "--reflink=auto", basePath, overlayPath).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("qemu-img: %s: %w", out, err)
+		return fmt.Errorf("cp: %s: %w", out, err)
 	}
 	return nil
 }
