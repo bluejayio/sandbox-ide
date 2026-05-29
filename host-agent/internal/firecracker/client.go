@@ -91,42 +91,62 @@ func (c *Client) LoadSnapshot(params SnapshotLoadParams) error {
 }
 
 // Spawn starts a Firecracker process and waits until its API socket is ready.
-// On failure, returns an error that includes firecracker's stderr and exit
-// status so the caller can see why startup failed (bad kernel path, missing
-// /dev/kvm, etc.) without having to dig through per-VM log files.
+// On failure, returns an error that includes firecracker's exit status and
+// any stdout/stderr it produced so the caller can see why startup failed.
+//
+// We capture both stdout and stderr because Firecracker writes startup
+// errors to stdout in some configurations (the --log-path file only opens
+// after config is validated). We also reap the process via Wait() in a
+// goroutine so an early exit is detected immediately rather than after the
+// full 5-second socket-poll timeout.
 func Spawn(vmID, socketPath, logPath string) (int, error) {
 	args := []string{"--api-sock", socketPath, "--id", vmID}
 	if logPath != "" {
 		args = append(args, "--log-path", logPath, "--level", "Info")
 	}
 
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd := exec.Command("/usr/bin/firecracker", args...)
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("spawn firecracker[%s]: %w", vmID, err)
 	}
 
-	// Poll until the API socket appears (firecracker creates it on startup).
+	// Reap the process in the background. If firecracker exits before
+	// the API socket appears, this channel fires immediately and we can
+	// return a useful error instead of timing out.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	// Poll until the API socket appears or firecracker dies.
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
 		conn, err := net.Dial("unix", socketPath)
 		if err == nil {
 			conn.Close()
 			return cmd.Process.Pid, nil
 		}
-		// If firecracker exited before opening the socket, surface its
-		// stderr so the caller knows why (e.g. KVM permission denied).
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return 0, fmt.Errorf("firecracker[%s] exited early (%s): %s",
-				vmID, cmd.ProcessState, strings.TrimSpace(stderr.String()))
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 
-	// Still running but stuck — kill it before returning.
-	cmd.Process.Kill()
-	return 0, fmt.Errorf("firecracker[%s]: API socket never appeared at %s; stderr=%q",
-		vmID, socketPath, strings.TrimSpace(stderr.String()))
+		select {
+		case waitErr := <-exited:
+			return 0, fmt.Errorf("firecracker[%s] exited early (%v); stdout=%q stderr=%q",
+				vmID, waitErr,
+				strings.TrimSpace(stdout.String()),
+				strings.TrimSpace(stderr.String()))
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				cmd.Process.Kill()
+				<-exited // reap to avoid zombie
+				return 0, fmt.Errorf("firecracker[%s]: API socket never appeared at %s; stdout=%q stderr=%q",
+					vmID, socketPath,
+					strings.TrimSpace(stdout.String()),
+					strings.TrimSpace(stderr.String()))
+			}
+		}
+	}
 }
