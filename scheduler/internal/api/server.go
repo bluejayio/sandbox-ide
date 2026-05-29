@@ -100,8 +100,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := "sess_" + randID(12)
-	vmID := "vm_" + randID(12)
+	sessionID := "sess-" + randID(12)
+	// Firecracker's --id rejects underscores, so use hyphens throughout.
+	vmID := "vm-" + randID(12)
 
 	// Reserve capacity optimistically; release on failure.
 	if err := s.pool.Reserve(r.Context(), host.ID, size.MemMiB); err != nil {
