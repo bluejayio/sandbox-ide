@@ -14,5 +14,8 @@ echo "==> building scheduler"
 echo "==> building host-agent"
 (cd "$REPO_ROOT/host-agent" && go build -o "$BIN_DIR/agent" ./cmd/agent)
 
+echo "==> building vm-agent (Linux x86_64 — runs inside the guest)"
+(cd "$REPO_ROOT/vm-agent" && GOOS=linux GOARCH=amd64 go build -o "$BIN_DIR/vm-agent" ./cmd/vm-agent)
+
 echo "==> done"
 ls -lh "$BIN_DIR"

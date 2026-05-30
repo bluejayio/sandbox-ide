@@ -198,6 +198,7 @@ type vmSlot struct {
 	WorkspaceID string `json:"workspace_id"`
 	Runtime     string `json:"runtime"`
 	SizeClass   string `json:"size_class"`
+	GuestCID    int    `json:"guest_cid"` // needed by the scheduler's stream relay to dial vsock
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -213,6 +214,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			VMID: v.ID, Status: string(v.Status),
 			WorkspaceID: v.WorkspaceID, Runtime: v.Runtime,
 			SizeClass: v.Size.Name,
+			GuestCID:  v.GuestCID,
 		})
 	}
 
@@ -256,6 +258,7 @@ func (s *Server) Heartbeat(ctx context.Context, schedulerURL string, interval ti
 					VMID: v.ID, Status: string(v.Status),
 					WorkspaceID: v.WorkspaceID, Runtime: v.Runtime,
 					SizeClass: v.Size.Name,
+					GuestCID:  v.GuestCID,
 				})
 			}
 			payload, _ := json.Marshal(heartbeatResponse{
