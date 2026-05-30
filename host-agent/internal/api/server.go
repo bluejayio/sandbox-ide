@@ -21,13 +21,18 @@ import (
 //	POST   /vms/restore              restore a VM from snapshot
 //	GET    /heartbeat                host capacity + VM inventory
 type Server struct {
-	mgr *vm.Manager
-	log *slog.Logger
-	mux *http.ServeMux
+	mgr          *vm.Manager
+	log          *slog.Logger
+	mux          *http.ServeMux
+	hostID       string // identifies this host to the scheduler
+	advertiseURL string // URL the scheduler uses to reach this agent
 }
 
-func NewServer(mgr *vm.Manager, log *slog.Logger) *Server {
-	s := &Server{mgr: mgr, log: log, mux: http.NewServeMux()}
+func NewServer(mgr *vm.Manager, log *slog.Logger, hostID, advertiseURL string) *Server {
+	s := &Server{
+		mgr: mgr, log: log, mux: http.NewServeMux(),
+		hostID: hostID, advertiseURL: advertiseURL,
+	}
 	s.mux.HandleFunc("/vms", s.handleCreateVM)
 	s.mux.HandleFunc("/vms/restore", s.handleRestore)
 	s.mux.HandleFunc("/vms/", s.handleVM) // /vms/{id} and /vms/{id}/snapshot
@@ -180,6 +185,8 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 // --- /heartbeat ---------------------------------------------------------
 
 type heartbeatResponse struct {
+	HostID     string    `json:"host_id"`
+	BaseURL    string    `json:"base_url"`
 	FreeMemMiB int       `json:"free_mem_mib"`
 	VMs        []vmSlot  `json:"vms"`
 	Timestamp  time.Time `json:"timestamp"`
@@ -210,6 +217,8 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, heartbeatResponse{
+		HostID:     s.hostID,
+		BaseURL:    s.advertiseURL,
 		FreeMemMiB: s.mgr.FreeMemMiB(),
 		VMs:        slots,
 		Timestamp:  time.Now(),
@@ -230,7 +239,7 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 }
 
 // Heartbeat sends a periodic capacity report to the scheduler.
-func Heartbeat(ctx context.Context, mgr *vm.Manager, schedulerURL string, interval time.Duration, log *slog.Logger) {
+func (s *Server) Heartbeat(ctx context.Context, schedulerURL string, interval time.Duration) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -240,7 +249,7 @@ func Heartbeat(ctx context.Context, mgr *vm.Manager, schedulerURL string, interv
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			vms := mgr.List()
+			vms := s.mgr.List()
 			slots := make([]vmSlot, 0, len(vms))
 			for _, v := range vms {
 				slots = append(slots, vmSlot{
@@ -250,7 +259,9 @@ func Heartbeat(ctx context.Context, mgr *vm.Manager, schedulerURL string, interv
 				})
 			}
 			payload, _ := json.Marshal(heartbeatResponse{
-				FreeMemMiB: mgr.FreeMemMiB(),
+				HostID:     s.hostID,
+				BaseURL:    s.advertiseURL,
+				FreeMemMiB: s.mgr.FreeMemMiB(),
 				VMs:        slots,
 				Timestamp:  time.Now(),
 			})
@@ -258,7 +269,7 @@ func Heartbeat(ctx context.Context, mgr *vm.Manager, schedulerURL string, interv
 			resp, err := client.Post(schedulerURL+"/internal/heartbeat", "application/json",
 				strings.NewReader(string(payload)))
 			if err != nil {
-				log.Warn("heartbeat failed", "err", err)
+				s.log.Warn("heartbeat failed", "err", err)
 				continue
 			}
 			resp.Body.Close()
