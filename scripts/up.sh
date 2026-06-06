@@ -23,6 +23,20 @@ if [[ ! -x "$BIN_DIR/scheduler" || ! -x "$BIN_DIR/agent" ]]; then
   exit 1
 fi
 
+# Kill any leftover scheduler/agent from a previous run that didn't get
+# cleaned up (typically because the user forgot down.sh). Without this,
+# the new processes fail silently on "address already in use".
+echo "==> clearing stale processes"
+if pgrep -f "^$BIN_DIR/scheduler " >/dev/null; then
+  echo "    killing stale scheduler"
+  pkill -f "^$BIN_DIR/scheduler " || true
+fi
+if pgrep -f "^$BIN_DIR/agent " >/dev/null; then
+  echo "    killing stale host-agent (needs sudo)"
+  sudo pkill -f "^$BIN_DIR/agent " || true
+fi
+sleep 1   # give the kernel a moment to release the ports
+
 # 1. Redis ---------------------------------------------------------------
 echo "==> starting redis"
 (cd "$REPO_ROOT" && docker compose up -d redis)
@@ -69,8 +83,11 @@ sudo -b nohup "$BIN_DIR/agent" \
   > "$RUN_DIR/agent.log" 2>&1 || true
 
 # Capture the agent PID. sudo backgrounded the process, so we grep ps.
+# Anchor the pattern at the start of the command line so we match only the
+# real binary invocation, not the sudo/nohup wrappers (which also have the
+# binary path somewhere in their argv).
 sleep 0.5
-pgrep -f "$BIN_DIR/agent" > "$RUN_DIR/agent.pid" || true
+pgrep -f "^$BIN_DIR/agent " > "$RUN_DIR/agent.pid" || true
 
 echo ""
 echo "==> stack is up"
