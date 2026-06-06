@@ -43,8 +43,11 @@ func NewManager(cfg Config) *Manager {
 
 // Create boots a new microVM for the given workspace and runtime.
 func (m *Manager) Create(ctx context.Context, vmID, runtime, workspaceID string, size SizeClass) (*VM, error) {
+	// Firecracker API server path. Each microVM has its own Firecracker server.
 	socketPath := filepath.Join(m.cfg.SocketDir, vmID+".sock")
+	// microVM rootfs path. This is where the microVM will store its files.
 	overlayPath := filepath.Join(m.cfg.SocketDir, vmID+"-root.ext4")
+	// microVM vsock UDS. This is how the host can connect to the microVM.
 	vsockPath := filepath.Join(m.cfg.SocketDir, vmID+"-vsock.sock")
 	logPath := filepath.Join(m.cfg.LogDir, vmID+".log")
 
