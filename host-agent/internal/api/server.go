@@ -1,15 +1,22 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/sandbox-ide/host-agent/internal/vm"
+	"github.com/sandbox-ide/host-agent/internal/vsock"
 )
+
+// vsockGuestPort is the port vm-agent listens on inside every guest.
+// Matches the --port default in vm-agent/cmd/vm-agent/main.go.
+const vsockGuestPort = 5252
 
 // Server exposes the host agent's HTTP API consumed by the scheduler.
 //
@@ -18,6 +25,7 @@ import (
 //	POST   /vms                      create and boot a new VM
 //	DELETE /vms/{id}                 destroy a VM
 //	POST   /vms/{id}/snapshot        pause and snapshot a VM
+//	POST   /vms/{id}/exec            stream an exec request to the guest's vm-agent
 //	POST   /vms/restore              restore a VM from snapshot
 //	GET    /heartbeat                host capacity + VM inventory
 type Server struct {
@@ -113,6 +121,8 @@ func (s *Server) handleVM(w http.ResponseWriter, r *http.Request) {
 		s.destroyVM(w, r, vmID)
 	case r.Method == http.MethodPost && action == "snapshot":
 		s.snapshotVM(w, r, vmID)
+	case r.Method == http.MethodPost && action == "exec":
+		s.execVM(w, r, vmID)
 	default:
 		http.NotFound(w, r)
 	}
@@ -140,6 +150,92 @@ func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request, vmID string)
 		return
 	}
 	jsonOK(w, snapshotResponse{VMID: vmID, SnapshotPath: snapPath, MemPath: memPath})
+}
+
+// --- /vms/{id}/exec -----------------------------------------------------
+//
+// The caller POSTs one or more NDJSON exec requests in the body; the host
+// agent opens a vsock channel to vm-agent inside the guest, pipes the
+// request body in, and streams the NDJSON response back chunk-by-chunk.
+// The HTTP response uses Transfer-Encoding: chunked with a Flusher after
+// each frame so callers see output as it's produced, not after the run.
+
+func (s *Server) execVM(w http.ResponseWriter, r *http.Request, vmID string) {
+	v, ok := s.mgr.Get(vmID)
+	if !ok {
+		jsonError(w, "vm not found", http.StatusNotFound)
+		return
+	}
+	if v.VsockPath == "" {
+		jsonError(w, "vm has no vsock channel", http.StatusConflict)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// All net/http servers expose Flusher; this is defensive only.
+		jsonError(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	// Read the request body upfront. Exec requests are small (one NDJSON
+	// line per call). Reading first avoids a race where a goroutine reads
+	// r.Body after the handler returns and net/http has already closed it.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonError(w, "read request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	conn, err := vsock.Dial(v.VsockPath, vsockGuestPort)
+	if err != nil {
+		s.log.Error("vsock dial failed", "vm_id", vmID, "err", err)
+		jsonError(w, "vsock dial: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(body); err != nil {
+		s.log.Error("vsock write failed", "vm_id", vmID, "err", err)
+		jsonError(w, "vsock write: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Stream guest output until vm-agent emits its {"type":"exit"} frame.
+	// We can't half-close to signal end-of-requests because Firecracker's
+	// UDS proxy tears down the vsock bridge on host CloseWrite, dropping
+	// in-flight output. The protocol itself tells us when we're done:
+	// vm-agent always sends exactly one exit frame as its last line.
+	if err := streamUntilExit(w, flusher, conn); err != nil && err != io.EOF {
+		s.log.Warn("exec stream ended", "vm_id", vmID, "err", err)
+	}
+}
+
+// streamUntilExit copies NDJSON frames from src to w line-by-line, flushing
+// after each frame. Returns once a line whose decoded "type" field is
+// "exit" has been forwarded, or on error/EOF.
+func streamUntilExit(w io.Writer, f http.Flusher, src io.Reader) error {
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if _, err := w.Write(append(line, '\n')); err != nil {
+			return err
+		}
+		f.Flush()
+
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &probe) == nil && probe.Type == "exit" {
+			return nil
+		}
+	}
+	return scanner.Err()
 }
 
 // --- /vms/restore -------------------------------------------------------

@@ -65,6 +65,8 @@ echo "==> response stream:"
 # Connect to the per-VM Unix socket, send "CONNECT <port>\n" so Firecracker
 # bridges to the guest's vsock port, then exchange NDJSON. tail -n +2 strips
 # Firecracker's "OK <port>" preamble so only vm-agent's frames remain.
+# You must send "CONNECT <port>\n" before sending the exec request: 
+# https://github.com/firecracker-microvm/firecracker/blob/main/docs/vsock.md#host-initiated-connections
 uds="/var/run/agent/vms/${vm_id}-vsock.sock"
 # sleep keeps stdin open long enough for vm-agent to run the exec and stream
 # back its frames; socat -t 5 extends the half-close grace window so the read
